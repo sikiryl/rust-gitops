@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: nongkai
+  name: nongkai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nongkai
+  strategy: {}
+  template:
+    metadata:
+      labels:
+        app: nongkai
+    spec:
+      containers:
+        - image: jumpboxacademy/nongkai:0.1.0
+          name: nongkai
+          resources: {}
+status: {}

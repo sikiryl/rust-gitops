@@ -1,0 +1,108 @@
+name: '⭐️ Build and Deploy'
+
+on:
+  push:
+    branches: [ "branch" ]
+
+env:
+  # Use docker.io for Docker Hub if empty
+  REGISTRY: ghcr.io
+  # github.repository as <account>/<repo>
+  IMAGE_NAME: ${{ github.repository }}
+
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tags }}
+    environment: dev
+    permissions:
+      contents: read
+      packages: write
+      # This is used to complete the identity challenge
+      # with sigstore/fulcio when running outside of PRs.
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # Set up BuildKit Docker container builder to be able to build
+      # multi-platform images and export cache
+      # https://github.com/docker/setup-buildx-action
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f95db51fddba0c2d1ec667646a06c2ce06100226 # v3.0.0
+
+      # Login against a Docker registry except on PR
+      # https://github.com/docker/login-action
+      - name: Log into registry ${{ env.REGISTRY }}
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@343f7c4344506bcbf9b4de18042ae17996df046d # v3.0.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Extract metadata (tags, labels) for Docker
+      # https://github.com/docker/metadata-action
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@96383f45573cb7f253c731d3b3ab81c87ef81934 # v5.0.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=${{ vars.ENV }}-
+
+      # Build and push Docker image with Buildx (don't push on PR)
+      # https://github.com/docker/build-push-action
+      - name: Build and push Docker image
+        id: build-and-push
+        uses: docker/build-push-action@0565240e2d4ab88bba5387d719585280857ece09 # v5.0.0
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  publish-deploy:
+    needs: build
+    if: ${{ github.ref == 'refs/heads/develop' && github.event_name == 'push' }}
+    name: Set-version and Deploy
+    runs-on: ubuntu-24.04
+    environment: dev
+
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+
+    steps:
+    - name: Clone nonprd repository
+      uses: actions/checkout@v3
+      with:
+        repository: 'sikiryl/k8s-app'
+        token: ${{ secrets.GH_PAT }}  # Use your PAT for private repositories
+        path: 'k8s-app'
+        ref: main
+    - name: Deploy microservice
+      working-directory: k8s-app
+      run: |
+        echo "${{ needs.build.outputs.image_tag }}"
+
+    - name: Update image from registry
+      working-directory: k8s-app
+      run: |-
+        wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq &&\
+        chmod +x /usr/bin/yq
+        export IMAGE_TAG=${{ needs.build.outputs.image_tag }}
+        echo "$IMAGE_TAG"
+        yq -i '.repository.image = strenv(IMAGE_TAG) 'deployment/cart/values.yaml
+    
+    - name: Update repository
+      working-directory: k8s-app
+      run: |-
+        git config --global user.email "support@dependabot.com"
+        git config --global user.name "dependabot[bot]"
+        git add .
+        git commit -am "release ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build.outputs.image_tag }}"
+        git push origin main
